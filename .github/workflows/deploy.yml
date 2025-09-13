@@ -1,0 +1,84 @@
+name: Admin Backend Deploy
+
+on:
+  push:
+    branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Type check
+        run: npm run type-check
+      
+      - name: Run tests
+        run: npm test
+        env:
+          NODE_ENV: test
+      
+      - name: Build application
+        run: npm run build
+      
+      - name: Deploy to Railway (Staging)
+        if: github.ref == 'refs/heads/develop' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+        run: |
+          npm install -g @railway/cli
+          railway login --token ${{ secrets.RAILWAY_TOKEN }}
+          railway up --environment staging
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      
+      - name: Deploy to Railway (Production)
+        if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
+        run: |
+          npm install -g @railway/cli
+          railway login --token ${{ secrets.RAILWAY_TOKEN }}
+          railway up --environment production
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      
+      - name: Run database migrations (Production)
+        if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
+        run: npm run db:migrate:prod
+        env:
+          DATABASE_URL: ${{ secrets.ADMIN_DATABASE_URL_PROD }}
+          CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL_PROD }}
+      
+      - name: Health check
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+        run: |
+          if [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            curl -f https://admin-api.yourdomain.com/health
+          else
+            curl -f https://admin-api-staging.yourdomain.com/health
+          fi
+      
+      - name: Notify admin team
+        if: github.ref == 'refs/heads/main'
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#admin-deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
